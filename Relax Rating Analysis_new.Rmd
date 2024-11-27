@@ -1,0 +1,1942 @@
+---
+---
+title: "Bayesian Analysis Relaxation"
+author: "Rebecca Scarratt"
+date: "2024-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages}
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(stats)
+library(rstatix)
+#library(rethinking)
+library(brms)
+library(cmdstanr)
+library(tidybayes)
+library(broom)            # Convert model objects to data frames
+library(broom.mixed)      # Convert brms model objects to data frames
+#library(betareg)          # Run beta regression models
+library(extraDistr)       # Use extra distributions like dprop()
+library(ggdist)           # Special geoms for posterior distributions
+library(gghalves)         # Special half geoms
+library(ggbeeswarm)       # Special distribution-shaped point jittering
+library(ggrepel)          # Automatically position labels
+library(patchwork)        # Combine ggplot objects
+library(scales)           # Format numbers in nice ways
+library(marginaleffects)  # Calculate marginal effects for regression models
+library(modelsummary) 
+library(ggpattern)
+```
+
+```{r}
+setwd("~/PhD Rebecca/Familiarity, predictive coding and arousal/Real data collection/")
+
+```
+
+```{r loading in my data}
+
+ratings <- read.csv('Final data/all_responses_recoded.csv')
+ratings$X <-NULL
+
+
+# merge with backgorund information
+background_info <- read.csv('Final data/background_information.csv')
+background_info$X <-NULL
+
+ratings <- merge(ratings, background_info, by='ID')
+
+# exclude participant 12 because of absence of Liking ratings
+# exclude participant 59 because of over 40.
+
+
+ratings <- subset(ratings, !c(fmri_id %in% c(12, 59)))
+
+ratings %>% count(fmri_id)
+
+
+fmri_id <- unique(ratings$fmri_id)
+#write.csv(fmri_id, 'subject_numbers.csv')
+
+# create a pop variable so that we can use info from the column liking music more easily
+ratings$pop <- ifelse(grepl('Pop', ratings$music), 1, 0)
+
+# transform some variables into numeric
+ratings$current_country <- as.factor(ratings$current_country)
+ratings$childhood_country <- as.factor(ratings$childhood_country)
+ratings$nationality <- as.factor(ratings$nationality)
+
+# change ratings to be between 0 and 1
+ratings$score <- ratings$Relaxation/100
+
+ratings <- subset(ratings, !is.na(Liking))
+
+ratings$liking_01 <- ratings$Liking/100
+
+# Z-score Liking ratings so that during the Lmer, it doesn't put the intercept at the lowest value of Liking but at the mean.
+ratings$Liking_z <- (ratings$liking_01-mean(ratings$liking_01))/sd(ratings$liking_01)
+
+# for now make the ratings not have 0s or so that we can use the normal beta distribution
+
+ratings$score[ratings$score==1] = .999
+
+ratings$score[ratings$score==0] = .001
+
+# make nationality be grouped
+
+ratings <- ratings %>% mutate(
+  cat_nationality = case_when(nationality %in% c('Danish', 'Danish/Faroese') ~ 'Danish',
+                              nationality %in% c('American & Polish', 'American and German',
+                                                 'Austrian', 'Dutch', 'Finnish', 'French', 
+                                                 'German', 'Italian', 'Polish', 'Spanish') 
+                              ~ 'Europe West',
+                              nationality %in% c('Belarusian', 'Greek', 'Hungarian', 'Latvian',
+                                                 'Lithuanian', 'Moldovan, Romanian', 'Romanian', 
+                                                 'Slovak', 'Slovene') ~ 'Europe East',
+                              nationality %in% c('Argentinian', 'Chilean', 'Chinese', 'Colombian', 
+                                                 'Indonesian', 'Mexican', 'Pakistani') ~ 'Non- Western')
+)
+
+# make education be grouped
+ratings <- ratings %>% mutate(
+  cat_education = case_when(education %in% c('High school') ~ 'High school',
+                            education %in% c('Bachelor') ~ 'Bachelor',
+                            education %in% c('Master', 'More', 'PhD') ~ 'Higher')
+)
+
+# set singign ability as factor and change levels
+ratings$singing_ability <- factor(ratings$singing_ability, 
+                                  levels = c(0, 1, 2, 3),  # Current levels in your data
+                                  labels = c("Poor", "Medium", "Group", "Good"))  # New level names
+
+ratings$singing_ability <- relevel(ratings$singing_ability, ref = "Group")
+
+# Check the structure to confirm the changes
+str(ratings$singing_ability)
+
+
+```
+
+```{r descriptives analysis}
+des_ratings <- read.csv('Final data/all_responses_recoded.csv')
+des_ratings$X <-NULL
+
+
+# merge with background information
+background_info <- read.csv('Final data/background_information.csv')
+background_info$X <-NULL
+
+des_ratings <- merge(des_ratings, background_info, by='ID')
+
+# exclude participant 59 because of over 40.
+
+des_ratings <- subset(des_ratings, !c(fmri_id %in% c(59)))
+
+des_ratings %>% count(fmri_id)
+
+# create a pop variable so that we can use info from the column liking music more easily
+des_ratings$pop <- ifelse(grepl('Pop', des_ratings$music), 1, 0)
+
+# transform some variables into numeric
+des_ratings$current_country <- as.factor(des_ratings$current_country)
+des_ratings$childhood_country <- as.factor(des_ratings$childhood_country)
+des_ratings$nationality <- as.factor(des_ratings$nationality)
+
+## AGE
+summary(des_ratings$age)
+sd(des_ratings$age)
+
+## Gender
+des_ratings$gender <- factor(des_ratings$gender)
+summary(des_ratings$gender)/48
+
+## Nationality
+ratings$cat_nationality <- factor(ratings$cat_nationality)
+summary(ratings$cat_nationality)/48
+
+## Current country
+des_ratings$current_country <- factor(des_ratings$current_country)
+summary(des_ratings$current_country)/48
+
+## Childhood country
+des_ratings$childhood_country <- factor(des_ratings$childhood_country)
+summary(des_ratings$childhood_country)/48
+
+## Handednesss
+des_ratings$handedness <- factor(des_ratings$handedness)
+summary(des_ratings$handedness)/48
+
+## Education
+des_ratings$education <- factor(des_ratings$education)
+summary(des_ratings$education)/48
+
+## Singing ability
+des_ratings$singing_ability <- factor(des_ratings$singing_ability)
+summary(des_ratings$singing_ability)/48
+
+## frequency music relax
+des_ratings$freq_music_relax <- factor(des_ratings$freq_music_relax)
+summary(des_ratings$freq_music_relax)/48
+
+# extraversion
+mean(des_ratings$extraversion)
+sd(des_ratings$extraversion)
+
+#meant Music Training
+mean(des_ratings$meantMT)
+sd(des_ratings$meantMT)
+
+# type music
+des_ratings$music <- factor(des_ratings$music)
+summary(des_ratings$music)/48
+
+# music relax
+des_ratings$type_music_relax <- factor(des_ratings$type_music_relax)
+summary(des_ratings$type_music_relax)/48
+
+
+subset(des_ratings, fmri_id == 12)
+```
+
+```{r exploring the data}
+
+summary(ratings$Relaxation)
+
+sd(ratings$Relaxation)
+
+ratings %>%
+  ggplot(aes(x = new_familiarity, y = score, pattern = Type)) +
+    geom_boxplot_pattern(
+      pattern_fill = "grey",   # Color for the pattern
+          pattern_density = 0.5) +# Adjust pattern density as needed
+    scale_pattern_manual(values = c(Excitative = "stripe", Sedative = "none"))+
+    #scale_fill_manual(values= c("Excitative"= "grey", "Sedative"="grey4"))+
+    labs(x = "Familiarity", y = "Relaxation") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(hjust=1))# testaroo
+
+ratings %>%
+  ggplot(aes(x = new_familiarity, y = score, fill = Type)) +
+    geom_boxplot()+
+    labs(x = "Familiarity", y = "Relaxation") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=90, hjust=1)) + 
+  facet_wrap(~fmri_id)
+
+ratings %>%
+  ggplot(aes(x = Liking, y = score)) +
+    geom_line()+
+    labs(x = "Liking", y = "Relaxation") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=90, hjust=1))
+
+ggplot(ratings, aes(x = new_familiarity, y = Relaxation)) + geom_boxplot()
+ggplot(ratings, aes(x = Type, y = Relaxation)) + geom_boxplot()
+
+plot(ratings$score~ ratings$Liking_z)
+
+Lowlike <- subset(ratings, Liking < 50)
+Highlike <- subset(ratings, Liking >= 50)
+
+summary(Lowlike$score)
+summary(Highlike$score)
+
+# plot the distributions of each group individually for poster
+
+FS <- subset(ratings, new_familiarity=='familiar' & Type =='Sedative')
+US <- subset(ratings, new_familiarity=='unfamiliar' & Type =='Sedative')
+FE <- subset(ratings, new_familiarity=='familiar' & Type =='Excitative')
+UE <- subset(ratings, new_familiarity=='unfamiliar' & Type =='Excitative')
+
+summary(FS$Relaxation)
+sd(FS$Relaxation)
+
+summary(US$Relaxation)
+sd(US$Relaxation)
+
+summary(FE$Relaxation)
+sd(FE$Relaxation)
+
+summary(UE$Relaxation)
+sd(UE$Relaxation)
+
+summary(ratings$Relaxation)
+sd(ratings$Relaxation)
+
+hist(FS$Relaxation, col = 'cadetblue1', xlab = 'Relaxation', main= '', ylab = '', breaks = 30, cex.axis  = 1, cex.lab =3)
+abline(v = mean(FS$Relaxation), col = 'blue')
+text(70, 70, round(mean(FS$Relaxation),2),
+    cex = 1, pos = 2, col = "blue")
+hist(US$Relaxation, col = 'blue2', xlab = 'Relaxation', main= '', ylab = '', breaks = 30, cex.axis  = 1, cex.lab =3)
+abline(v = mean(US$Relaxation), col = 'cadetblue1')
+text(65, 50, round(mean(US$Relaxation),2),
+    cex = 1, pos = 2, col = "cadetblue1")
+hist(FE$Relaxation, col = 'salmon', xlab = 'Relaxation', main= '', ylab = '', breaks = 30, cex.axis  = 1, cex.lab =3)
+abline(v = mean(FE$Relaxation), col = 'brown3')
+text(70, 60, round(mean(FE$Relaxation),2),
+    cex = 1, pos = 2, col = "brown3")
+hist(UE$Relaxation, col = 'brown3', xlab = 'Relaxation', main= '', ylab = '', breaks = 30, cex.axis  = 1, cex.lab =3)
+abline(v = mean(UE$Relaxation), col = 'salmon')
+text(50, 50, round(mean(UE$Relaxation),2),
+    cex = 1, pos = 2, col = "salmon")
+
+mean(FS$Relaxation)
+mean(US$Relaxation)
+mean(FE$Relaxation)
+mean(UE$Relaxation)
+
+hist(ratings$Relaxation)
+
+
+correlation <- ratings %>%
+  select(Relaxation, Measured_Fam) %>%
+  na.omit() %>%
+  cor()
+correlation
+
+correlation <- ratings %>%
+  select(Relaxation, Liking) %>%
+  na.omit() %>%
+  cor()
+
+correlation
+
+plot(ratings$Relaxation, ratings$Measured_Fam)
+
+```
+
+### Bayesian Analysis Method
+
+```{r beta distribution}
+
+
+gfg = seq(0,1, by=0.01)
+ 
+# Case 3
+plot(gfg, dbeta(gfg, 3,2), xlab = "X",
+     ylab = "Beta Density", type = "l",
+     col = "Red")
+plot(gfg, dnorm(gfg, 0.5,0.1), xlab = "X",
+     ylab = "Norm Density", type = "l",
+     col = "Blue")
+```
+
+# Zero-One Beta
+
+```{r with brms}
+
+
+# create model only with Type and Familiarity for now to understand how it works
+
+
+model_beta_bayes_zi <- brm(
+  bf(score ~ Type + new_familiarity,
+     phi ~ Type + new_familiarity,
+     zoi ~ Type + new_familiarity,
+     coi ~ Type + new_familiarity),
+  data = ratings,
+  family = zero_one_inflated_beta(),
+  init = 0,
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  backend = "cmdstanr",
+  file = "model_beta_bayes_zi"
+)
+
+# check results
+tidy(model_beta_bayes_zi, effects = "fixed")
+
+
+# doing it in a different way
+
+
+fancy_formula <- bf(
+  # mu (mean) part
+  score_b ~ Type + new_familiarity + 
+   (1 | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  
+   (1 | fmri_id),
+  # alpha (zero-inflation) part
+  zoi ~ Type + new_familiarity +  
+   (1 | fmri_id),
+  # gamma (one-inflation) part
+  coi ~ Type + new_familiarity +  
+   (1 | fmri_id)
+)
+
+
+get_prior(
+  fancy_formula,
+  data = ratings,
+  family = zero_one_inflated_beta()
+)
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+fancy_model <- brm(
+  fancy_formula,
+  data = ratings,
+  family = zero_one_inflated_beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "fancy_model",
+  save_pars= save_pars(all=TRUE)
+)
+
+tidy_fancy <- tidy(fancy_model)
+write.csv(tidy_fancy, 'tidy_fancy.csv')
+
+# figure out how to interpret and plot these results
+# important to figure out which values are logit and which are logged
+
+
+# now do one with Liking
+
+fancy_formula_liking_z <- bf(
+  # mu (mean) part
+  score_b ~ Type + new_familiarity + Liking_z +
+   (1 | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  Liking_z +
+   (1 | fmri_id),
+  # alpha (zero-inflation) part
+  zoi ~ Type + new_familiarity +  Liking_z +
+   (1 | fmri_id),
+  # gamma (one-inflation) part
+  coi ~ Type + new_familiarity +  Liking_z +
+   (1 | fmri_id)
+)
+
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+fancy_model_liking_z <- brm(
+  fancy_formula_liking_z,
+  data = ratings,
+  family = zero_one_inflated_beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "fancy_model_liking_z"
+)
+
+tidy_fancy_liking_z <- tidy(fancy_model_liking_z)
+write.csv(tidy_fancy_liking_z, 'tidy_fancy_liking_z.csv')
+
+# model with liking and random effects of fam and type
+
+fancy_formula_liking_id_z <- bf(
+  # mu (mean) part
+  score_b ~ Type + new_familiarity + Liking_z +
+   (1 + Type + new_familiarity | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  Liking_z +
+   (1 + Type + new_familiarity | fmri_id),
+  # alpha (zero-inflation) part
+  zoi ~ Type + new_familiarity +  Liking_z +
+   (1 + Type + new_familiarity | fmri_id),
+  # gamma (one-inflation) part
+  coi ~ Type + new_familiarity +  Liking_z +
+   (1 + Type + new_familiarity | fmri_id)
+)
+
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+fancy_model_liking_id_z <- brm(
+  fancy_formula_liking_id_z,
+  data = ratings,
+  family = zero_one_inflated_beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "fancy_model_liking_id_z"
+)
+
+tidy(fancy_model_liking_id)
+summary(fancy_model_liking_id)
+
+tidy_fancy_liking_id <- tidy(fancy_model_liking_id_z)
+write.csv(tidy_fancy_liking_id, 'tidy_fancy_liking_id.csv')
+```
+
+```{r posterior of fancy_model_liking_id}
+# proceed with fancy_model_liking_id
+
+posterior_beta <- fancy_model_liking_id_z %>% 
+  gather_draws(`b_.*`, regex = TRUE) %>% 
+  mutate(component = ifelse(str_detect(.variable, "phi_"), "Precision", "Mean"),
+         intercept = str_detect(.variable, "Intercept"))
+
+ggplot(posterior_beta, aes(x = .value, y = fct_rev(.variable), fill = component)) +
+  geom_vline(xintercept = 0) +
+  stat_halfeye(aes(slab_alpha = intercept), 
+               .width = c(0.8, 0.95), point_interval = "median_hdi") +
+  scale_fill_viridis_d(option = "viridis", end = 0.6) +
+  scale_slab_alpha_discrete(range = c(1, 0.4)) +
+  guides(fill = "none", slab_alpha = "none") +
+  labs(x = "Coefficient", y = "Variable",
+       caption = "80% and 95% credible intervals shown in black") +
+  facet_wrap(vars(component), ncol = 1, scales = "free_y") +
+  theme_minimal()+
+  xlim (-30,40)
+
+# transform the estimates
+
+# if loggit, then
+(1/(1+exp(-0.361+0.242))) - (1/(1+exp(-0.361)))
+exp(0.137)
+
+beta_mu_intercept <- fancy_model_liking_id_z %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "(Intercept)") %>% 
+  pull(estimate)
+# -0.407
+
+beta_mu_Type <- fancy_model_liking_id_z %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "TypeSedative") %>% 
+  pull(estimate)
+
+beta_mu_fam <- fancy_model_liking_id_z %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "new_familiarityunfamiliar") %>% 
+  pull(estimate)
+
+beta_mu_liking <- fancy_model_liking_id_z %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "Liking_z") %>% 
+  pull(estimate)
+
+plogis(beta_mu_intercept + beta_mu_Type) - plogis(beta_mu_intercept)
+# Having sedative increases by 11%
+
+plogis(beta_mu_intercept + beta_mu_fam) - plogis(beta_mu_intercept)
+# Having unfamiliar decreases by 5.6%
+
+plogis(beta_mu_intercept + beta_mu_liking) - plogis(beta_mu_intercept)
+# Liking the track increases by 29%
+
+# now looking into what the phi intercepts mean
+
+beta_phi_intercept <- fancy_model_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_(Intercept)") %>% 
+  pull(estimate)
+
+beta_phi_Type <- fancy_model_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_TypeSedative") %>% 
+  pull(estimate)
+
+beta_phi_fam <- fancy_model_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_new_familiarityunfamiliar") %>% 
+  pull(estimate)
+
+beta_phi_liking <- fancy_model_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_liking_01") %>% 
+  pull(estimate)
+
+
+# plotting precision for now only with Type
+no_quota_title <- paste0("dprop(mean = plogis(", round(beta_mu_intercept, 2),
+                         "), size = exp(", round(beta_phi_intercept, 2), "))")
+
+quota_title <- paste0("dprop(mean = plogis(", round(beta_mu_intercept, 2),
+                      " + ", round(beta_mu_fam, 2), 
+                      "), size = exp(", round(beta_phi_intercept, 2),
+                      " + ", round(beta_phi_fam, 2), "))")
+
+ggplot(data = tibble(x = 0:1), aes(x = x)) +
+  geom_density(data = ratings_b, 
+               aes(x = score, fill = new_familiarity), alpha = 0.5, color = NA) +
+  stat_function(fun = dprop, size = 1,
+                args = list(size = exp(beta_phi_intercept), 
+                            mean = plogis(beta_mu_intercept)),
+                aes(color = no_quota_title)) +
+  stat_function(fun = dprop, size = 1,
+                args = list(size = exp(beta_phi_intercept + beta_phi_fam), 
+                            mean = plogis(beta_mu_intercept + beta_mu_fam)),
+                aes(color = quota_title)) +
+  scale_x_continuous(labels = label_percent()) +
+  scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Fam",
+                       guide = guide_legend(ncol = 1, order = 1)) +
+  scale_color_viridis_d(option = "plasma", end = 0.8, direction = -1, name = "",
+                        guide = guide_legend(reverse = TRUE, ncol = 1, order = 2)) +
+  labs(x = "Proportion of relaxation") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# hummm by looking at this, I would say that the model doesn't fit the data very well
+
+# average comparision - marginal effects
+
+avg_slopes(fancy_model_liking_id,
+           newdata = datagrid(Type = c('Sedative', 'Excitative'),
+                              new_familiarity = c('familiar', 'unfamiliar'),
+                              liking_01 = seq(0, 1, by = 0.1)))
+
+# effects of Type
+fancy_zi_Type <- fancy_model_liking_id %>%
+  avg_comparisons(variables = "Type") %>% 
+  posterior_draws()
+
+fancy_zi_Type %>% median_hdi(draw)
+
+ggplot(fancy_zi_Type, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "#bc3032") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of having Sedative music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+# effects of fam
+fancy_zi_fam <- fancy_model_liking_id %>%
+  avg_comparisons(variables = "new_familiarity") %>% 
+  posterior_draws()
+
+fancy_zi_fam %>% median_hdi(draw)
+
+ggplot(fancy_zi_fam, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "blue") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of having Unfamiliar music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+# effects of liking
+
+fancy_zi_liking <- fancy_model_liking_id %>%
+  avg_comparisons(variables = "Liking_z") %>% 
+  posterior_draws()
+
+fancy_zi_liking %>% median_hdi(draw)
+
+ggplot(fancy_zi_liking, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "pink") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of liking the music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+# now across all variables
+
+
+
+
+
+fancy_zi_Type_fam <- fancy_model_liking_id %>% 
+  predictions(newdata = datagrid(new_familiarity = c('familiar', 'unfamiliar'),
+                                 liking_01 = seq(0, 1, by = 0.1))) %>% 
+  posterior_draws() %>% 
+  # Scale liking_01 back up for plotting
+  mutate(liking_01 = liking_01 * 100)
+
+ggplot(fancy_zi_Type_fam,
+       aes(x = liking_01, y = draw, color = new_familiarity, fill = new_familiarity)) +
+  stat_lineribbon(aes(fill_ramp = stat(level))) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_viridis_d(option = "plasma", end = 0.8) +
+  scale_color_viridis_d(option = "plasma", end = 0.8) +
+  scale_fill_ramp_discrete(range = c(0.2, 0.7)) +
+  facet_wrap(vars(new_familiarity), ncol = 2,
+             labeller = labeller(new_familiarity = c("Sedative" = "Sedative", "Excitative" = "Excitative"))) +
+  labs(x = "liking_01",
+       y = "Predicted proportion of relaxation",
+       fill = "new_familiarity", color = "new_familiarity",
+       fill_ramp = "Credible interval") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+# Normal beta distribution
+
+```{r what about trying a simple beta distribution for interpretation's sake}
+# model with liking and random effects of fam and type
+
+# make ratings only have a couple of columns for simplicity
+
+#ratings <- ratings[c('fmri_id', 'Relaxation', 'score', 'liking_01', 'Liking_z', 'Type', 'new_familiarity')]
+
+formula_beta_simple <- bf(
+  # mu (mean) part
+  score ~ Type + new_familiarity + 
+   (1 | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  
+   (1 | fmri_id)
+)
+
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+model_beta_simple <- brm(
+  formula_beta_simple,
+  data = ratings,
+  family = Beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "model_beta_simple"
+)
+
+tidy(model_beta_simple, effects='fixed')
+tidy_simple <- tidy(model_beta_simple)
+write.csv(tidy_simple, 'simple.csv')
+
+
+formula_beta_simple_id <- bf(
+  # mu (mean) part
+  score ~ Type + new_familiarity + 
+   (1 + Type + new_familiarity | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  
+   (1 + Type + new_familiarity | fmri_id)
+)
+
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+model_beta_simple_id <- brm(
+  formula_beta_simple_id,
+  data = ratings,
+  family = Beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "model_beta_simple_id"
+)
+
+
+tidy(model_beta_simple_id, effects='fixed')
+tidy_simple_id <- tidy(model_beta_simple_id)
+write.csv(tidy_simple_id, 'tidy_simple_id.csv')
+
+
+formula_beta_simple_liking <- bf(
+  # mu (mean) part
+  score ~ Type + new_familiarity + Liking_z +
+   (1 | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  Liking_z +
+   (1 | fmri_id)
+)
+
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+model_beta_simple_liking <- brm(
+  formula_beta_simple_liking,
+  data = ratings,
+  family = Beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "model_beta_simple_liking"
+)
+
+tidy(model_beta_simple_liking, effects='fixed')
+tidy_simple_liking <- tidy(model_beta_simple_liking)
+write.csv(tidy_simple_liking, 'tidy_simple_liking.csv')
+
+formula_beta_simple_liking_id <- bf(
+  # mu (mean) part
+  score ~ Type + new_familiarity + Liking_z +
+   (1 + Type + new_familiarity | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  Liking_z +
+   (1 + Type + new_familiarity | fmri_id)
+)
+
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+model_beta_simple_liking_id <- brm(
+  formula_beta_simple_liking_id,
+  data = ratings,
+  family = Beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "model_beta_simple_liking_id"
+)
+
+tidy(model_beta_simple_liking_id, effects='fixed')
+tidy_simple_liking_id <- tidy(model_beta_simple_liking_id)
+write.csv(tidy_simple_liking_id, 'tidy_simple_liking_id.csv')
+
+waic(model_beta_simple)
+waic(fancy_model_liking_id)
+
+model_beta_simple <- add_criterion(model_beta_simple, criterion = c("loo", "waic"))
+fancy_model_liking_id <- add_criterion(fancy_model_liking_id, criterion = c("loo", "waic"))
+
+
+loo1 <- loo(model_beta_simple, save_psis = TRUE)
+loo2 <- loo(fancy_model_liking_id, save_psis = TRUE)
+print(loo1)
+print(loo2)
+plot(loo1)
+
+loo_compare(loo1, loo2)
+
+yrep <- posterior_predict(model_beta_simple)
+library(bayesplot)
+ppc_loo_pit_qq(
+  y = ratings$score,
+  yrep = yrep,
+  lw = weights(loo1$psis_object)
+)
+
+# plot posteriors
+
+posterior_beta <- model_beta_simple %>% 
+  gather_draws(`b_.*`, regex = TRUE) %>% 
+  mutate(component = ifelse(str_detect(.variable, "phi_"), "Precision", "Mean"),
+         intercept = str_detect(.variable, "Intercept"))
+
+ggplot(posterior_beta, aes(x = .value, y = fct_rev(.variable), fill = component)) +
+  geom_vline(xintercept = 0) +
+  stat_halfeye(aes(slab_alpha = intercept), 
+               .width = c(0.8, 0.95), point_interval = "median_hdi") +
+  #scale_fill_viridis_d(option = "viridis", end = 0.6) +
+  scale_slab_alpha_discrete(range = c(1, 0.4)) +
+  guides(fill = "none", slab_alpha = "none") +
+  labs(x = "Coefficient", y = "Variable",
+       caption = "80% and 95% credible intervals shown in black") +
+  facet_wrap(vars(component), ncol = 1, scales = "free_y") +
+  theme_minimal()
+
+summary(model_beta_simple)
+
+
+ggplot(model_beta_simple, aes(x = liking_01, y = score)) +
+  stat_lineribbon() + 
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "Purples") +
+  labs(x = "Liking", y = "Score",
+       fill = "Credible interval") +
+  theme_clean() +
+  theme(legend.position = "bottom")
+
+avg_slopes(model_beta_simple, variables = "liking_01")
+
+slopes(model_beta_simple, 
+       variables = "liking_01",
+       newdata = datagrid(liking_01 = c(0.1, 0.2, 0.3, 0.4, 0.5,0.6, 0.7, 0.8, 0.9)))
+
+ame_beta_bayes_1 <- model_beta_simple %>% 
+  slopes(variables = "liking_01",
+         newdata = datagrid(liking_01 = c(0.1, 0.2, 0.3, 0.4, 0.5,0.6, 0.7, 0.8, 0.9))) %>% 
+  posterior_draws()
+
+
+ggplot(ame_beta_bayes_1, aes(x = draw, fill = factor(liking_01))) +
+  geom_vline(xintercept = 0) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               slab_alpha = 0.75) +
+  scale_x_continuous() +
+  scale_fill_viridis_d(option = "viridis", end = 0.6) +
+  labs(x = "Average marginal effect of liking", 
+       y = "Density", fill = "Liking",
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+plot(liking_01 ~score_b, data=ratings)
+
+
+beta_bayes_pred_1 <- model_beta_simple %>% 
+  epred_draws(newdata = expand_grid(Type = c('Excitative'),
+                                    new_familiarity = 'familiar',
+                                    fmri_id = c(unique_ratings$fmri_id),
+                                    liking_01 = seq(0.1, 0.99, by = 0.1)))
+
+ggplot(beta_bayes_pred_1, aes(x = liking_01, y = .epred)) +
+  stat_lineribbon() + 
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "Purples") +
+  labs(x = "Liking", y = "Predicted relaxation",
+       fill = "Credible interval") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+
+
+
+# transform the estimates
+
+
+
+
+model_beta_simple_liking_id %>% 
+  spread_draws(`b_.*`, regex = TRUE) %>% 
+  mutate(across(starts_with("b_phi"), ~exp(.))) %>%
+  mutate(across((!starts_with(".") & !starts_with("b_phi")), ~plogis(.))) %>%
+  gather_variables() %>% 
+  median_hdi()
+
+# if loggit, then
+1/(1+exp(-1.44))
+exp(2.02)
+
+beta_mu_intercept <- model_beta_simple_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "(Intercept)") %>% 
+  pull(estimate)
+
+beta_mu_Type <- model_beta_simple_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "TypeSedative") %>% 
+  pull(estimate)
+
+beta_mu_fam <- model_beta_simple_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "new_familiarityunfamiliar") %>% 
+  pull(estimate)
+
+beta_mu_liking <- model_beta_simple_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "Liking_z") %>% 
+  pull(estimate)
+
+plogis(beta_mu_intercept + beta_mu_Type) - plogis(beta_mu_intercept)
+# Having sedative increases by 10.3%
+
+plogis(beta_mu_intercept + beta_mu_fam) - plogis(beta_mu_intercept)
+# Having unfamiliar decreases by 5.9%
+
+plogis(beta_mu_intercept + beta_mu_liking) - plogis(beta_mu_intercept)
+# Liking the track increases by 7.4%
+
+# now looking into what the phi intercepts mean
+
+beta_phi_intercept <- model_beta_simple_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_(Intercept)") %>% 
+  pull(estimate)
+
+beta_phi_Type <- model_beta_simple_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_TypeSedative") %>% 
+  pull(estimate)
+
+beta_phi_fam <- model_beta_simple_liking_id %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_new_familiarityunfamiliar") %>% 
+  pull(estimate)
+
+beta_phi_liking <- model_beta_simple %>% 
+  tidy() %>% 
+  filter(component == "cond", term == "phi_liking_01") %>% 
+  pull(estimate)
+
+
+
+# effects of Type
+zi_Type <- model_beta_simple_liking_id %>%
+  avg_comparisons(variables = "Type") %>% 
+  posterior_draws()
+
+zi_Type %>% median_hdi(draw)
+
+ggplot(zi_Type, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "#4599F5") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of having Sedative music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+# effects of fam
+zi_fam <- model_beta_simple_liking_id %>%
+  avg_comparisons(variables = "new_familiarity") %>% 
+  posterior_draws()
+
+zi_fam %>% median_hdi(draw)
+
+ggplot(zi_fam, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "#FEAC7C") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of having Unfamiliar music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+# effects of liking
+
+zi_liking <- model_beta_simple_liking_id %>%
+  avg_comparisons(variables = "Liking_z") %>% 
+  posterior_draws()
+
+zi_liking %>% median_hdi(draw)
+
+ggplot(zi_liking, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "forestgreen") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of liking the music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+avg_slopes(model_beta_simple,
+           newdata = datagrid('Type', 'new_familiarity'))
+
+model_beta_simple %>% 
+  avg_comparisons(variables = c('Type', 'new_familiarity', 'liking_01'))
+
+
+beta_bayes_pred_1 <- model_beta_simple %>% 
+  epred_draws(newdata = expand_grid(Type = 'Sedative',
+                                    new_familiarity ='familiar',
+                                    liking_01 = seq(0, 100, by = 1)),
+                                    fmri_id = NA)
+
+ggplot(beta_bayes_pred_1, aes(x = polyarchy, y = .epred)) +
+  stat_lineribbon() + 
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_brewer(palette = "Purples") +
+  labs(x = "Polyarchy (democracy)", y = "Predicted proportion of women MPs",
+       fill = "Credible interval") +
+  theme_clean() +
+  theme(legend.position = "bottom")
+
+```
+
+```{r model comparison}
+## get the waic for each model
+
+waic_fancy_z <- waic(fancy_model_z)
+waic_liking_z <- waic(fancy_model_liking_z)
+waic_liking_id_z <- waic(fancy_model_liking_id_z)
+
+
+waic_model_beta_simple <- waic(model_beta_simple)
+waic_model_beta_simple_id <- waic(model_beta_simple_id)
+waic_model_beta_simple_liking <- waic(model_beta_simple_liking)
+waic_model_beta_simple_liking_id <- waic(model_beta_simple_liking_id)
+waic_model_beta_simple_singing <- waic(model_beta_simple_singing)
+
+loo_compare(waic_fancy_z, waic_liking_z, waic_liking_id_z)
+
+
+
+AIC(fancy_model_liking_id_z, fancy_model_z, fancy_model_liking_z, model_beta_simple, model_beta_simple_id, model_beta_simple_liking, model_beta_simple_liking_id,model_beta_simple_singing)
+
+AIC(fancy_model_liking_z)
+```
+
+
+```{r clustering the data based on random effects}
+random_effects <- ranef(model_beta_simple_z, condVar = FALSE)$fmri_id
+random_effects_df <- as.data.frame(random_effects)
+
+fixed_effects <- fixef(model_beta_simple_z)
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+Fixed_Sed <-fixed_effects_df['Estimate']
+Fixed_Sed <- Fixed_Sed['TypeSedative',]
+
+Fixed_Unfam <- fixed_effects_df['Estimate']
+Fixed_Unfam <- Fixed_Unfam['new_familiarityunfamiliar',]
+
+Fixed_Intercept <- fixed_effects_df['Estimate']
+Fixed_Intercept <- Fixed_Intercept['Intercept',]
+  
+# only keep estimates for each variable
+
+random_effects_df <- random_effects_df[c(1, 5,9)]
+random_effects_df <- rownames_to_column(random_effects_df)
+
+colnames(random_effects_df) <- c('fmri_id', 'Est_Intercept', 'Est_Sed', 'Est_Unfam')
+
+# now we need to add these to the fixed effect of Type and Familiarity
+
+random_effects_df2 <- random_effects_df
+
+random_effects_df2$Est_Sed <- random_effects_df$Est_Sed + Fixed_Sed
+
+random_effects_df2$Est_Unfam <- random_effects_df$Est_Unfam + Fixed_Unfam
+
+random_effects_df2$Est_Intercept <- random_effects_df$Est_Intercept + Fixed_Intercept
+
+
+# plot on two dimensions
+plot(random_effects_df2$Est_Sed ~ random_effects_df2$Est_Unfam)
+
+# transform the data
+inverse_logit <- function(x) {
+  1 / (1 + exp(-x))
+}
+
+# Apply the inverse logit transformation to all columns
+back_transformed_data <- data.frame(
+  fmri_id = numeric(nrow(random_effects_df2)),
+  Est_Eff_Sed = numeric(nrow(random_effects_df2)),
+  Est_Eff_Unfam = numeric(nrow(random_effects_df2))
+)
+
+for (i in 1:nrow(random_effects_df2)) {
+  back_transformed_data$fmri_id[i] = random_effects_df2$fmri_id[i]
+  back_transformed_data$Est_Eff_Sed[i] = inverse_logit(random_effects_df2$Est_Intercept[i] + random_effects_df2$Est_Sed[i]) - inverse_logit(random_effects_df2$Est_Intercept[i])
+  back_transformed_data$Est_Eff_Unfam[i] = inverse_logit(random_effects_df2$Est_Intercept[i] + random_effects_df2$Est_Unfam[i]) - inverse_logit(random_effects_df2$Est_Intercept[i])
+}
+
+
+back_transformed_data$Est_Eff_Sed <- back_transformed_data$Est_Eff_Sed *100
+back_transformed_data$Est_Eff_Unfam <- back_transformed_data$Est_Eff_Unfam *100
+
+ggplot(back_transformed_data, aes(x = Est_Eff_Unfam, y = Est_Eff_Sed)) +
+  geom_point(size = 3) +                                      # Plot points
+  geom_text(aes(label = fmri_id), vjust = -0.5, hjust = 0.5) +  # Add fmri_id labels
+  labs(title = "Scatter Plot of Est_Sed vs Est_Unfam",
+       x = "Est_Eff_Unfam", y = "Est_Eff_Sed") +
+  theme_minimal()
+
+
+# split on positive and negative effect of each condition
+
+quad1 <- subset(back_transformed_data, Est_Eff_Sed >= 0 & Est_Eff_Unfam < 0)
+quad2 <- subset(back_transformed_data, Est_Eff_Sed >= 0 & Est_Eff_Unfam >= 0)
+quad3 <- subset(back_transformed_data, Est_Eff_Sed <0 & Est_Eff_Unfam >= 0)
+quad4 <- subset(back_transformed_data, Est_Eff_Sed < 0 & Est_Eff_Unfam < 0)
+
+back_transformed_data <- back_transformed_data %>% mutate(
+  quadID = case_when(
+    Est_Eff_Sed >= 0 & Est_Eff_Unfam < 0 ~ 1,
+    Est_Eff_Sed >= 0 & Est_Eff_Unfam >= 0 ~2,
+    Est_Eff_Sed <0 & Est_Eff_Unfam >= 0~3,
+    Est_Eff_Sed < 0 & Est_Eff_Unfam < 0~ 4))
+
+##### Now try k-means clustering based on the back_transformed_data
+
+
+set.seed(123)  # Set seed for reproducibility
+
+wcss = vector()
+kClusters = list()
+
+
+clust_data <- back_transformed_data
+
+wide_df <- clust_data
+
+wide_df$fmri_id <- NULL
+
+# reducing to k-max = 10 here, as we have no reason to believe there would be more
+for (i in 1:10) {
+  thisK <- kmeans(x = wide_df, centers = i, iter.max=20000)
+  #wcss[i] = sum(kmeans(dFC.s, i, iter.max=1000)$withinss)
+  wcss[i] = sum(thisK$withinss)
+  kClusters[[i]] = t(apply(thisK$centers, 1, function(r)r*attr(wide_df,'scaled:scale') + attr(wide_df, 'scaled:center')))
+}
+
+
+plot(1:10,
+     wcss,
+     type = 'b',
+     main = paste('Selection of most suitable k'),
+     xlab = 'k',
+     ylab = 'Within-cluster sum-of-squares')
+
+
+# Going for cluster plots instead
+library(factoextra)
+set.seed(123)
+thisK <- kmeans(x = wide_df, centers = 4, iter.max=100000, nstart = 10000)
+plotForK4 <- fviz_cluster(thisK, data=wide_df)
+plotForK4
+
+k <- 4
+
+# Perform k-means clustering
+kmeans_result <- kmeans(wide_df, centers = k)
+
+kmeans_result
+
+kmeans.labels = kmeans_result$cluster
+
+clust_data$clusterID <- kmeans.labels
+
+wide_df$clusterID <- kmeans.labels
+
+# Basic scatter plot with color based on clusterID
+
+ggplot(clust_data, aes(x = Est_Eff_Unfam, y = Est_Eff_Sed, color = factor(clusterID))) +
+  geom_point(size = 3) +                                      # Plot points
+  geom_text(aes(label = fmri_id), vjust = -0.5, hjust = 0.5) +  # Add fmri_id labels
+  labs(title = "K-means clustering on the individual effects of Familiarity and Type ",
+       x = "Est_Eff_Unfam", y = "Est_Eff_Sed", color = "Cluster ID") +
+  theme_minimal()
+
+id_means <- ratings %>% 
+  group_by(fmri_id, new_familiarity, Type) %>% 
+  summarise(Relaxation= mean(Relaxation))
+
+# create a map of fmri_id and cluster group for raw data
+merged <- merge(id_means, clust_data, by= 'fmri_id', all=TRUE)
+rawdata_clust <- merged[c('fmri_id', 'clusterID')]
+rawdata_clust <- rawdata_clust %>% distinct(fmri_id, .keep_all = TRUE)
+
+ratings_merged <- merge(ratings, rawdata_clust, by= 'fmri_id')
+
+
+ratings_merged %>%
+  ggplot(aes(x = new_familiarity, y = score, fill = Type)) +
+    geom_boxplot()+
+    labs(x = "Familiarity", y = "Relaxation") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=90, hjust=1)) +
+  facet_wrap(~clusterID)
+
+cluster1 <- subset(merged, clusterID ==1)
+cluster2 <- subset(merged, clusterID ==2)
+cluster3 <- subset(merged, clusterID ==3)
+cluster4 <- subset(merged, clusterID ==4)
+
+write.csv(ratings_merged, 'data_with_clustering_0609.csv', row.names = FALSE)
+
+# quad merged
+
+# create a map of fmri_id and cluster group for raw data
+quad_merged <- merge(id_means, back_transformed_data, by= 'fmri_id', all=TRUE)
+quad_rawdata_clust <- quad_merged[c('fmri_id', 'quadID')]
+quad_rawdata_clust <- quad_rawdata_clust %>% distinct(fmri_id, .keep_all = TRUE)
+
+quad_ratings_merged <- merge(ratings, quad_rawdata_clust, by= 'fmri_id')
+
+quad_ratings_merged %>%
+  ggplot(aes(x = new_familiarity, y = score, fill = Type)) +
+    geom_boxplot()+
+    labs(x = "Familiarity", y = "Relaxation") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=90, hjust=1)) +
+  facet_wrap(~quadID)
+
+quad1 <- subset(quad_merged, quadID ==1)
+quad2 <- subset(quad_merged, quadID ==2)
+quad3 <- subset(quad_merged, quadID ==3)
+quad4 <- subset(quad_merged, quadID ==4)
+
+ggplot(quad_merged, aes(x = Est_Eff_Unfam, y = Est_Eff_Sed, color = factor(quadID))) +
+  geom_point(size = 3) +                                      # Plot points
+  geom_text(aes(label = fmri_id), vjust = -0.5, hjust = 0.5) +  # Add fmri_id labels
+  labs(title = "Quadrant clustering on the individual effects of Familiarity and Type prior altertion",
+       x = "Est_Eff_Unfam", y = "Est_Eff_Sed", color = "bal_clust") +
+  theme_minimal()
+
+## Balanced k-means to have equal group sizes
+clust_data <- back_transformed_data
+
+wide_df <- clust_data
+
+wide_df$fmri_id <- NULL
+set.seed(123)  # For reproducibility
+
+# Perform initial K-Means clustering
+kmeans_result <- kmeans(wide_df, centers = 4)
+
+# Extract clusters
+clusters <- kmeans_result$cluster
+
+# Ensure equal-sized clusters (for 4 clusters, and dataset size is divisible by 4)
+size_per_cluster <- nrow(wide_df) / 4
+cluster_sizes <- table(clusters)
+
+library(anticlust)
+
+
+bal_clust_data <- clust_data
+bal_clust_data$quadID <- NULL
+
+# randomly remove one participant
+random_fmri_id <- sample(unique(clust_data$fmri_id), 1)
+df_filtered <- bal_clust_data %>% 
+  filter(fmri_id != random_fmri_id)
+
+df_filtered_noID <- df_filtered
+
+df_filtered_noID$fmri_id <- NULL
+
+balanced_clusters <- balanced_clustering(df_filtered_noID, 4, method = "centroid", solver = NULL)
+
+plot_clusters(df_filtered_noID, clusters = balanced_clusters)
+
+df_filtered$bal_clust <- balanced_clusters
+
+ggplot(df_filtered, aes(x = Est_Eff_Unfam, y = Est_Eff_Sed, color = factor(bal_clust))) +
+  geom_point(size = 3) +                                      # Plot points
+  geom_text(aes(label = fmri_id), vjust = -0.5, hjust = 0.5) +  # Add fmri_id labels
+  labs(title = "Balanced clustering on the individual effects of Familiarity and Type prior altertion",
+       x = "Est_Eff_Unfam", y = "Est_Eff_Sed", color = "bal_clust") +
+  theme_minimal()
+
+# balanced clusters but edited based on k-means and quadrant classification
+
+bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 51] <- bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 38] # because participant 38 was correctly and consistenly classified
+
+
+bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 30] <- bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 38]
+
+bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 56] <- bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 38]
+
+bal_ratings_merged$bal_clust[fmri_id==24] <- NA # because inconsistent classification
+bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 61] <- bal_ratings_merged$bal_clust[bal_ratings_merged$fmri_id == 60]# because participant 60 was correctly and consistenly classified
+
+
+df_filtered$bal_clust[df_filtered$fmri_id == 51] <- df_filtered$bal_clust[df_filtered$fmri_id == 38]
+df_filtered$bal_clust[df_filtered$fmri_id == 30] <- df_filtered$bal_clust[df_filtered$fmri_id == 38]
+df_filtered$bal_clust[df_filtered$fmri_id == 56] <- df_filtered$bal_clust[df_filtered$fmri_id == 38]
+df_filtered$bal_clust[df_filtered$fmri_id == 24] <- NA
+df_filtered$bal_clust[df_filtered$fmri_id == 61] <- df_filtered$bal_clust[df_filtered$fmri_id == 60]
+
+
+# create a map of fmri_id and cluster group for raw data
+bal_merged <- merge(id_means, df_filtered, by= 'fmri_id', all=TRUE)
+bal_rawdata_clust <- bal_merged[c('fmri_id', 'bal_clust')]
+bal_rawdata_clust <- bal_rawdata_clust %>% distinct(fmri_id, .keep_all = TRUE)
+
+# add here for fmri_id 61, somehow it didn't work before
+
+bal_rawdata_clust$bal_clust[bal_rawdata_clust$fmri_id == 61] <- bal_rawdata_clust$bal_clust[bal_rawdata_clust$fmri_id == 60]
+
+
+bal_ratings_merged <- merge(ratings, bal_rawdata_clust, by= 'fmri_id')
+
+bal_ratings_merged %>%
+  ggplot(aes(x = new_familiarity, y = score, fill = Type)) +
+    geom_boxplot()+
+    labs(x = "Familiarity", y = "Relaxation") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=90, hjust=1)) +
+  facet_wrap(~bal_clust)
+
+
+
+
+
+ggplot(df_filtered, aes(x = Est_Eff_Unfam, y = Est_Eff_Sed, color = factor(bal_clust))) +
+  geom_point(size = 3) +                                      # Plot points
+  geom_text(aes(label = fmri_id), vjust = -0.5, hjust = 0.5) +  # Add fmri_id labels
+  labs(title = "Summarised clustering on the individual effects of Familiarity and Type",
+       x = "Est_Eff_Unfam", y = "Est_Eff_Sed", color = "bal_clust") +  theme_minimal()
+
+
+
+write.csv(bal_ratings_merged, 'bal_ratings_merged.csv')
+write.csv(df_filtered, 'df_filtered.csv', row.names = FALSE)
+
+
+clustered_data <- bal_ratings_merged
+```
+
+```{r Analysis on Clusters}
+
+clustered_data <- read.csv('bal_ratings_merged.csv')
+df_filtered <- read.csv('df_filtered.csv')
+
+# remove the one NA participant (fmri_ID =24)
+
+clustered_data <- subset(clustered_data, fmri_id != 24)
+
+# data = clustered_data
+bal1 <- subset(clustered_data, bal_clust ==1)
+bal2 <- subset(clustered_data, bal_clust ==2)
+bal3 <- subset(clustered_data, bal_clust ==3)
+bal4 <- subset(clustered_data, bal_clust ==4)
+
+unique(bal2$fmri_id)
+
+# the notes don't make sense because the clusters keep changing
+
+#1
+hist(bal1$score, breaks=20)
+shapiro.test(bal1$score)
+
+
+glmm_model <- (score ~ Type * new_familiarity + (1 | fmri_id),  # Change family if data is not normal
+                    data = bal1)
+
+
+clus1_glm <- glmmTMB(score ~ Type + new_familiarity + (1  | fmri_id), 
+                 data = bal4, 
+                 family = beta_family())
+
+summary(clus1_glm)
+
+kruskal.test(Relaxation~ new_familiarity, data=bal1) # Chi= 15.526(1), p<0.001
+kruskal.test(Relaxation~ Type, data=bal1) # Chi= 3.4712(1), p=0.0624
+kruskal.test(Relaxation~ singing_ability, data=bal1)
+
+pairwise.wilcox.test(bal1$Relaxation, bal1$singing_ability,
+                 p.adjust.method = "bonferroni")
+# 0 is higher than all. 1 is lower than all.
+
+kruskal_effsize(Relaxation~ new_familiarity, data=bal1)
+kruskal_effsize(Relaxation~ Type, data=bal1)
+
+# 2
+kruskal.test(Relaxation~ new_familiarity, data=bal2) # Chi= 173.11(1), p<0.001
+kruskal.test(Relaxation~ Type, data=bal2)# Chi= 1.7835(1), p=0.1817
+kruskal.test(Relaxation~ singing_ability, data=bal2)
+
+pairwise.wilcox.test(bal2$Relaxation, bal2$singing_ability,
+                 p.adjust.method = "bonferroni")
+
+glm_model <- glm(score ~ Type + new_familiarity, data = bal2)
+summary(glm_model)
+
+# 2 is different from 3.
+
+kruskal_effsize(Relaxation~ new_familiarity, data=bal2)
+
+# 3
+kruskal.test(Relaxation~ new_familiarity, data=bal3) # Chi= 0.027(1), p=0.869
+kruskal.test(Relaxation~ Type, data=bal3) # Chi= 146.09(1), p<0.001
+kruskal.test(Relaxation~ singing_ability, data=bal3)
+
+pairwise.wilcox.test(bal3$Relaxation, bal3$singing_ability,
+                 p.adjust.method = "bonferroni")
+
+kruskal_effsize(Relaxation~ Type, data=bal3)
+
+glm_model <- glm(score ~ Type + new_familiarity, data = bal3)
+summary(glm_model)
+
+# 4
+kruskal.test(Relaxation~ new_familiarity, data=bal4)# Chi= 40.986(1), p<0.001
+kruskal.test(Relaxation~ Type, data=bal4) # Chi= 66.415(1), p<0.001
+kruskal.test(Relaxation~ singing_ability, data=bal4)
+
+pairwise.wilcox.test(bal4$Relaxation, bal4$singing_ability,
+                 p.adjust.method = "bonferroni")
+# 0 rates higher
+
+kruskal_effsize(Relaxation~ new_familiarity, data=bal4)
+kruskal_effsize(Relaxation~ Type, data=bal4)
+kruskal_effsize(Relaxation~ singing_ability, data=bal4)
+
+glm_model <- glm(score ~ Type + new_familiarity, data = bal4)
+summary(glm_model)
+
+clustered_data$singing_ability <- as.factor(clustered_data$singing_ability)
+
+install.packages("ggpattern")
+library(ggpattern)
+
+
+clustered_data %>%
+  filter(!is.na(bal_clust)) %>% 
+  ggplot(aes(x = new_familiarity, y = score, fill = Type)) +
+    geom_boxplot()+
+    scale_fill_manual(values=c("Excitative"))
+    labs(x = "Familiarity", y = "Relaxation") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=0, hjust=1)) +
+  facet_wrap(~bal_clust_label)
+    
+clustered_data %>%
+  filter(!is.na(bal_clust)) %>% 
+  ggplot(aes(x = new_familiarity, y = score, pattern = Type)) +
+    geom_boxplot_pattern(
+          pattern_fill = "grey",   # Color for the pattern
+          pattern_density = 0.5) +# Adjust pattern density as needed
+    scale_pattern_manual(values = c(Excitative = "stripe", Sedative = "none"))+
+    labs(x = "Familiarity", y = "Relaxation") +
+    ggtitle("  ") +
+     theme_minimal()+
+     theme(axis.text.x=element_text(angle=0, hjust=1)) +
+    facet_wrap(~bal_clust_label)
+
+
+ggplot(data = clustered_data, aes(x = new_familiarity, y = score, pattern = Type)) +
+  geom_bar_pattern(position = position_dodge(preserve = "single"),
+                   color = "black", 
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_density = 0.1,
+                   pattern_spacing = 0.025,
+                   pattern_key_scale_factor = 0.6) + 
+  scale_fill_manual(values = colorRampPalette(c("#0066CC","#FFFFFF","#FF8C00"))(4)) +
+  scale_pattern_manual(values = c(Nerd = "stripe", NotNerd = "none")) +
+  labs(x = "Class", y = "Number of Students", pattern = "Nerd?") + 
+  guides(pattern = guide_legend(override.aes = list(fill = "white")),
+         fill = guide_legend(override.aes = list(pattern = "none")))
+
+
+
+clustered_data <- clustered_data %>% mutate(
+  bal_clust_label = 
+  case_when(bal_clust == 1 ~ 'Inconsistent',
+            bal_clust == 2 ~ 'Fam Driven',
+            bal_clust == 3 ~ 'Type Driven',
+            bal_clust == 4 ~ 'Both')
+)
+
+# descriptives of each cluster
+
+clustered_data %>% group_by(bal_clust_label, Type, new_familiarity) %>% 
+  summarise(
+  M_Relax = mean(Relaxation),
+  SD_Relaxation= sd(Relaxation)
+) -> descriptives_per_cluster
+
+write.csv(descriptives_per_cluster, 'descriptives per cluster.csv', row.names = FALSE)
+
+hist(clustered_data$Relaxation[clustered_data$bal_clust_label=='Neither'])
+hist(clustered_data$Relaxation[clustered_data$bal_clust_label=='Fam Only'])
+hist(clustered_data$Relaxation[clustered_data$bal_clust_label=='Type Only'])
+hist(clustered_data$Relaxation[clustered_data$bal_clust_label=='Both'])
+
+```
+
+```{r Cluster descriptives}
+clustered_data <- clustered_data %>% mutate(
+  cat_nationality = case_when(nationality %in% c('Danish', 'Danish/Faroese') ~ 'Danish',
+                              nationality %in% c('American & Polish', 'American and German',
+                                                 'Austrian', 'Dutch', 'Finnish', 'French', 
+                                                 'German', 'Italian', 'Polish', 'Spanish') 
+                              ~ 'Europe West',
+                              nationality %in% c('Belarusian', 'Greek', 'Hungarian', 'Latvian',
+                                                 'Lithuanian', 'Moldovan, Romanian', 'Romanian', 
+                                                 'Slovak', 'Slovene') ~ 'Europe East',
+                              nationality %in% c('Argentinian', 'Chilean', 'Chinese', 'Colombian', 
+                                                 'Indonesian', 'Mexican', 'Pakistani') ~ 'Non- Western')
+)
+
+
+clustered_data <- clustered_data %>% mutate(
+  cat_education = case_when(education %in% c('High school') ~ 'High school',
+                            education %in% c('Bachelor') ~ 'Bachelor',
+                            education %in% c('Master', 'More', 'PhD') ~ 'Higher')
+)
+
+# set singign ability as factor and change levels
+clustered_data$singing_ability <- factor(clustered_data$singing_ability, 
+                                  levels = c(0, 1, 2, 3),  # Current levels in your data
+                                  labels = c("Poor", "Medium", "Group", "Good"))  # New level names
+
+clustered_data$gender <- as.factor(clustered_data$gender)
+clustered_data$cat_education <- as.factor(clustered_data$cat_education)
+clustered_data$type_music_relax <- as.factor(clustered_data$type_music_relax)
+clustered_data$freq_music_relax <- as.factor(clustered_data$freq_music_relax)
+clustered_data$radio <- as.factor(clustered_data$radio)
+
+table(clustered_data$cat_nationality)/48
+
+table(clustered_data$bal_clust_label, clustered_data$cat_nationality)/48
+table(clustered_data$bal_clust_label, clustered_data$gender)/48
+table(clustered_data$bal_clust_label, clustered_data$cat_education)/48
+table(clustered_data$bal_clust_label, clustered_data$freq_music_relax)/48
+table(clustered_data$bal_clust_label, clustered_data$singing_ability)/48
+table(clustered_data$bal_clust_label, clustered_data$handedness)/48
+
+
+unclear <- subset(clustered_data, bal_clust ==1)
+famdriven <- subset(clustered_data, bal_clust ==2)
+typedriven <- subset(clustered_data, bal_clust ==3)
+both <- subset(clustered_data, bal_clust ==4)
+
+mean(unclear$age)
+sd(unclear$age)
+mean(unclear$extraversion)
+sd(unclear$extraversion)
+mean(unclear$meantMT)
+sd(unclear$meantMT)
+
+summary(unclear$type_music_relax)/48
+unclear$music <- as.factor(unclear$music)
+summary(unclear$music)/48
+
+
+mean(famdriven$age)
+sd(famdriven$age)
+mean(famdriven$extraversion)
+sd(famdriven$extraversion)
+mean(famdriven$meantMT)
+sd(famdriven$meantMT)
+
+summary(famdriven$type_music_relax)/48
+famdriven$music <- as.factor(famdriven$music)
+summary(famdriven$music)/48
+
+
+
+mean(typedriven$age)
+sd(typedriven$age)
+mean(typedriven$extraversion)
+sd(typedriven$extraversion)
+mean(typedriven$meantMT)
+sd(typedriven$meantMT)
+
+summary(typedriven$type_music_relax)/48
+typedriven$music <- as.factor(typedriven$music)
+summary(typedriven$music)/48
+
+
+
+mean(both$age)
+sd(both$age)
+mean(both$extraversion)
+sd(both$extraversion)
+mean(both$meantMT)
+sd(both$meantMT)
+
+summary(both$type_music_relax)/48
+both$music <- as.factor(both$music)
+summary(both$music)/48
+
+
+
+
+
+```
+
+```{r frequentist using glmmTMB}
+library(glmmTMB)
+
+model_1 <- glmmTMB(score ~ Type + new_familiarity + (1  | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+sum_model1 <- tidy(model_1)
+write.csv(sum_model1, 'sum_model1.csv')
+
+model_2 <- glmmTMB(score ~ Type + new_familiarity + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_2)
+sum_model2 <- tidy(model_2)
+write.csv(sum_model2, 'sum_model2.csv')
+
+
+model_3 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + (1 + Type + new_familiarity| fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_3)
+sum_model3 <- tidy(model_3)
+write.csv(sum_model3, 'sum_model3.csv')
+
+model_4 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + age + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_4)
+sum_model4 <- tidy(model_4)
+write.csv(sum_model4, 'sum_model4.csv')
+
+# age not significant
+
+model_5 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + extraversion + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_5)
+sum_model5 <- tidy(model_5)
+write.csv(sum_model5, 'sum_model5.csv')
+# extraversion not significant
+
+ratings$pop <- as.factor(ratings$pop)
+model_6 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + pop + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_6)
+sum_model6 <- tidy(model_6)
+write.csv(sum_model6, 'sum_model6.csv')
+# pop not significant
+
+model_7 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + cat_nationality + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_7)
+sum_model7 <- tidy(model_7)
+write.csv(sum_model7, 'sum_model7.csv')
+# nationality not significant
+
+ratings$education <- as.factor(ratings$education)
+model_8 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + cat_education + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_8)
+sum_model8 <- tidy(model_8)
+write.csv(sum_model8, 'sum_model8.csv')
+# education not significant
+
+model_9 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + singing_ability + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_9)
+sum_model9 <- tidy(model_9)
+write.csv(sum_model9, 'sum_model9.csv')
+# singing_ability is significant
+
+model_10 <- glmmTMB(score ~ Type + new_familiarity + Liking_z + meantMT + (1 + Type + new_familiarity | fmri_id), 
+                 data = ratings, 
+                 family = beta_family())
+
+summary(model_10)
+sum_model10 <- tidy(model_10)
+write.csv(sum_model10, 'sum_model10.csv')
+
+# music training not significant
+
+aic <- c( AIC(model_1), AIC(model_2), AIC(model_3),AIC(model_9))
+
+# BIC
+bic <- c( BIC(model_1), BIC(model_2), BIC(model_3), BIC(model_9))
+
+model_comparison <- data.frame(Model = 1:4,
+                                #Adjusted_R_squared = adjusted_r_squared,
+                                AIC = aic,
+                                BIC = bic)
+
+
+model_comparison
+
+AIC(model_1,model_2, model_3,model_9)
+BIC(model_1,model_2, model_3,model_9)
+
+# we proceed with Model 9.
+```
+
+```{r conitnuing with model 9}
+ggplot(ratings, aes(x = new_familiarity, y = score, color = Type)) +
+  geom_boxplot() +
+  labs(
+    title = "Score by Singing Ability annd Type",
+    x = "Singing Ability",
+    y = " Score"
+  ) +
+  theme_minimal()
+
+ggplot(ratings, aes(x = singing_ability, y = score, fill = Type)) +
+  geom_boxplot() +
+  labs(
+    title = "Relaxation by Singing Ability, Familiarity and Type",
+    x = "Singing Ability",
+    y = " Relaxation"
+  ) +
+  facet_wrap(~new_familiarity)+
+  theme_minimal()
+
+  
+summary(model_9)
+  
+coefficients <- fixef(model_9)
+
+estimates <- c(0.30994, (0.30994+0.47709), (0.30994-0.18438), (0.30994+0.40569))
+0.558-0.692
+# Back-transform the estimates using the logistic function
+back_transformed <- 1 / (1 + exp(-estimates))
+
+# Display the back-transformed estimates
+back_transformed
+```
+
+
+```{r participant per cluster investigation}
+
+
+chisq.test(table(clustered_data$radio, clustered_data$bal_clust_label))
+contingency_table <- table(clustered_data$radio, clustered_data$bal_clust_label)
+chi_test <- chisq.test(contingency_table)
+(chi_test$observed - chi_test$expected)^2 / chi_test$expected
+chi_test$observed
+chi_test$expected
+
+clustered_data %>%
+  ggplot(aes(x = score, y = education, fill = education)) +
+    geom_boxplot()+
+    labs(x = "Relaxation", y = "education") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=90, hjust=1))+
+    facet_wrap(~bal_clust)
+
+clustered_data$pop <- factor(clustered_data$pop)
+clustered_data %>%
+  ggplot(aes(x = score, y = pop, fill = pop)) +
+    geom_boxplot()+
+    labs(x = "Relaxation", y = "pop") +
+    ggtitle("  ") +
+    theme_minimal()+
+    theme(axis.text.x=element_text(angle=90, hjust=1))+
+    facet_wrap(~bal_clust)
+
+### Need to check if these three groups are also apparent in the physiological measures! Or neuroimaging measures!
+```
+
+## extra
+
+```{r beta model simple no liking}
+
+# first liking as z score
+
+formula_beta_simple_no_liking <- bf(
+  # mu (mean) part
+  score ~ Type + new_familiarity + 
+   (1 + Type + new_familiarity | fmri_id),
+  # phi (precision) part
+  phi ~ Type + new_familiarity +  
+   (1 + Type + new_familiarity | fmri_id)
+)
+
+
+priors <- c(set_prior("student_t(3, 0, 2.5)", class = "Intercept"),
+            set_prior("normal(0, 1)", class = "b"))
+
+
+model_beta_simple_no_liking <- brm(
+  formula_beta_simple_no_liking,
+  data = ratings,
+  family = Beta(),
+  prior = priors,
+  init = 0,
+  control = list(adapt_delta = 0.97,
+                 max_treedepth = 12),
+  chains = 4, iter = 2000, warmup = 1000,
+  cores = 4, seed = 1234, 
+  threads = threading(2),
+  backend = "cmdstanr",
+  file = "model_beta_simple_no_liking"
+)
+
+tidy(model_beta_simple_z, effects='fixed')
+tidy(model_beta_simple_no_liking, effects='fixed')
+
+
+# effects of Type
+zi_Type_nl <- model_beta_simple_no_liking %>%
+  avg_comparisons(variables = "Type") %>% 
+  posterior_draws()
+
+zi_Type_nl %>% median_hdi(draw)
+zi_Type_nl %>% mean_hdi(draw)
+
+ggplot(zi_Type_nl, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "#bc3032") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of having Sedative music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+# effects of fam
+zi_fam_nl <- model_beta_simple_no_liking %>%
+  avg_comparisons(variables = "new_familiarity") %>% 
+  posterior_draws()
+
+zi_fam_nl %>% median_hdi(draw)
+zi_fam_nl %>% mean_hdi(draw)
+
+ggplot(zi_fam_nl, aes(x = draw)) +
+  stat_halfeye(.width = c(0.8, 0.95), point_interval = "median_hdi",
+               fill = "blue") +
+  scale_x_continuous(labels = label_percent()) +
+  labs(x = "Average marginal effect of having Unfamiliar music on the percentage of relaxation", y = NULL,
+       caption = "80% and 95% credible intervals shown in black") +
+  theme_minimal()
+
+
+model_beta_simple_no_liking %>% 
+  avg_comparisons(variables = c('Type', 'new_familiarity', 'Liking_z'))
+
+
+# plot posteriors
+
+posterior_beta <- model_beta_simple_no_liking %>% 
+  gather_draws(`b_.*`, regex = TRUE) %>% 
+  mutate(component = ifelse(str_detect(.variable, "phi_"), "Precision", "Mean"),
+         intercept = str_detect(.variable, "Intercept"))
+
+ggplot(posterior_beta, aes(x = .value, y = fct_rev(.variable), fill = component)) +
+  geom_vline(xintercept = 0) +
+  stat_halfeye(aes(slab_alpha = intercept), 
+               .width = c(0.8, 0.95), point_interval = "median_hdi") +
+  #scale_fill_viridis_d(option = "viridis", end = 0.6) +
+  scale_slab_alpha_discrete(range = c(1, 0.4)) +
+  guides(fill = "none", slab_alpha = "none") +
+  labs(x = "Coefficient", y = "Variable",
+       caption = "80% and 95% credible intervals shown in black") +
+  facet_wrap(vars(component), ncol = 1, scales = "free_y") +
+  theme_minimal()
+
+
+```
